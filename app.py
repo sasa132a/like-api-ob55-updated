@@ -1,4 +1,4 @@
-# app.py — Free Fire Like API (OB55) — يدعم كل الأقاليم بما فيها ME
+# app.py — Free Fire Like API (OB55) — نسخة سيرفرات Fallback
 from flask import Flask, request, jsonify
 import asyncio, binascii, json, os, requests
 from Crypto.Cipher import AES
@@ -13,20 +13,26 @@ TOKEN_FILE = "token_ind.json"
 DAILY_LIMIT = int(os.getenv("DAILY_LIMIT", "2000"))
 used_count = 0
 
+# كل إقليم: سيرفر أساسي + بدائل لو وقع
 REGION_SERVERS = {
-    "IND": "https://client.ind.freefiremobile.com",
-    "ME":  "https://clientbp.ggpolarbear.com",,
-    "PK":  "https://clientbp.ggpolarbear.com",,
-    "BD":  "https://clientbp.ggwhitehawk.com",
-    "SG":  "https://clientbp.ggpolarbear.com",
-    "ID":  "https://clientbp.ggpolarbear.com",
-    "VN":  "https://clientbp.ggpolarbear.com",
-    "TH":  "https://clientbp.ggpolarbear.com",
-    "RU":  "https://clientbp.ggpolarbear.com",
-    "BR":  "https://client.us.freefiremobile.com",
-    "US":  "https://client.us.freefiremobile.com",
-    "NA":  "https://client.us.freefiremobile.com",
-    "SAC": "https://client.us.freefiremobile.com",
+    "IND": ["https://client.ind.freefiremobile.com"],
+    "ME":  ["https://clientbp.ggblueshark.com",
+            "https://clientbp.ggpolarbear.com",
+            "https://clientbp.common.ggbluefox.com"],
+    "PK":  ["https://clientbp.ggblueshark.com",
+            "https://clientbp.ggpolarbear.com",
+            "https://clientbp.common.ggbluefox.com"],
+    "BD":  ["https://clientbp.ggwhitehawk.com",
+            "https://clientbp.ggpolarbear.com"],
+    "SG":  ["https://clientbp.ggpolarbear.com"],
+    "ID":  ["https://clientbp.ggpolarbear.com"],
+    "VN":  ["https://clientbp.ggpolarbear.com"],
+    "TH":  ["https://clientbp.ggpolarbear.com"],
+    "RU":  ["https://clientbp.ggpolarbear.com"],
+    "BR":  ["https://client.us.freefiremobile.com"],
+    "US":  ["https://client.us.freefiremobile.com"],
+    "NA":  ["https://client.us.freefiremobile.com"],
+    "SAC": ["https://client.us.freefiremobile.com"],
 }
 
 BASE_HEADERS = {
@@ -67,6 +73,17 @@ def uid_proto(uid):
     return m.SerializeToString()
 
 
+def get_base(region):
+    """يرجّع أول سيرفر شغال للإقليم (بيمنع خطأ الـ DNS)"""
+    for base in REGION_SERVERS[region]:
+        try:
+            requests.head(base, timeout=8)
+            return base
+        except Exception:
+            continue
+    return REGION_SERVERS[region][0]
+
+
 async def _like_one(session, url, edata, token):
     h = dict(BASE_HEADERS)
     h["Authorization"] = f"Bearer {token}"
@@ -85,8 +102,8 @@ async def fire_all_likes(uid, region, url, tokens):
         return await asyncio.gather(*tasks, return_exceptions=True)
 
 
-def get_profile(uid, region, token):
-    url = f"{REGION_SERVERS[region]}/GetPlayerPersonalShow"
+def get_profile(uid, region, token, base):
+    url = f"{base}/GetPlayerPersonalShow"
     edata = bytes.fromhex(encrypt_message(uid_proto(uid)))
     h = dict(BASE_HEADERS)
     h["Authorization"] = f"Bearer {token}"
@@ -98,7 +115,8 @@ def get_profile(uid, region, token):
 
 @app.route("/")
 def home():
-    return {"status": "ok", "api": "FF Like API OB55", "regions": list(REGION_SERVERS.keys())}
+    return {"status": "ok", "api": "FF Like API OB55",
+            "regions": list(REGION_SERVERS.keys())}
 
 
 @app.route("/like")
@@ -114,14 +132,14 @@ def like():
 
     try:
         tokens = load_tokens()
-        base = REGION_SERVERS[region]
+        base = get_base(region)          # ← بيختار سيرفر شغال تلقائياً
 
-        before = get_profile(uid, region, tokens[0]["token"])
+        before = get_profile(uid, region, tokens[0]["token"], base)
         before_like = before.AccountInfo.Likes
 
         asyncio.run(fire_all_likes(uid, region, f"{base}/LikeProfile", tokens))
 
-        after = get_profile(uid, region, tokens[0]["token"])
+        after = get_profile(uid, region, tokens[0]["token"], base)
         after_like = after.AccountInfo.Likes
         given = after_like - before_like
         status = 1 if given > 0 else 2
@@ -134,8 +152,9 @@ def like():
             ("LikesbeforeCommand", before_like),
             ("PlayerNickname", after.AccountInfo.PlayerNickname),
             ("Level", after.AccountInfo.Levels),
-            ("Region", after.AccountInfo.PlayerRegion),
+            ("Region", after.AccountInfo.Region),
             ("UID", after.AccountInfo.UID),
+            ("server_used", base),
             ("status", status),
             ("daily_limit", DAILY_LIMIT),
             ("used", used_count),
