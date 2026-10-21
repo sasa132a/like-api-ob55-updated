@@ -15,8 +15,8 @@ used_count = 0
 
 REGION_SERVERS = {
     "IND": "https://client.ind.freefiremobile.com",
-    "ME":  "https://clientbp.ggblueshark.com",
-    "PK":  "https://clientbp.ggblueshark.com",
+    "ME":  "https://clientbp.ggpolarbear.com",,
+    "PK":  "https://clientbp.ggpolarbear.com",,
     "BD":  "https://clientbp.ggwhitehawk.com",
     "SG":  "https://clientbp.ggpolarbear.com",
     "ID":  "https://clientbp.ggpolarbear.com",
