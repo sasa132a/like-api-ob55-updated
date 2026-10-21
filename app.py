@@ -1,265 +1,155 @@
+# app.py — Free Fire Like API (OB55) — يدعم كل الأقاليم بما فيها ME
 from flask import Flask, request, jsonify
-import asyncio
+import asyncio, binascii, json, os, requests
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
-import binascii
 import aiohttp
-import requests
-import json
-import like_pb2
-import uid_generator_pb2
-import visit_count_pb2
-from google.protobuf.message import DecodeError
+import like_pb2, uid_generator_pb2, visit_count_pb2
 from collections import OrderedDict
 
 app = Flask(__name__)
 
-# ✅ Valid API keys
-VALID_API_KEYS = {
-    "BHUWAN"  # don't change warna api nhi chalega
-}
-
-# 🔢 Like limit tracking
-daily_limit = 200
+TOKEN_FILE = "token_ind.json"
+DAILY_LIMIT = int(os.getenv("DAILY_LIMIT", "2000"))
 used_count = 0
 
+REGION_SERVERS = {
+    "IND": "https://client.ind.freefiremobile.com",
+    "ME":  "https://clientbp.ggblueshark.com",
+    "PK":  "https://clientbp.ggblueshark.com",
+    "BD":  "https://clientbp.ggwhitehawk.com",
+    "SG":  "https://clientbp.ggpolarbear.com",
+    "ID":  "https://clientbp.ggpolarbear.com",
+    "VN":  "https://clientbp.ggpolarbear.com",
+    "TH":  "https://clientbp.ggpolarbear.com",
+    "RU":  "https://clientbp.ggpolarbear.com",
+    "BR":  "https://client.us.freefiremobile.com",
+    "US":  "https://client.us.freefiremobile.com",
+    "NA":  "https://client.us.freefiremobile.com",
+    "SAC": "https://client.us.freefiremobile.com",
+}
 
-def load_tokens(region):
-    try:
-        if region == "IND":
-            with open("token_ind.json", "r") as f:
-                tokens = json.load(f)
-        elif region in {"BR", "US", "SAC", "NA"}:
-            with open("token_br.json", "r") as f:
-                tokens = json.load(f)
-        else:
-            with open("token_bd.json", "r") as f:
-                tokens = json.load(f)
-        return tokens
-    except Exception as e:
-        app.logger.error(f"Error loading tokens for region {region}: {e}")
-        return None
+BASE_HEADERS = {
+    "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 9; ASUS_Z01QD Build/PI)",
+    "Connection": "Keep-Alive",
+    "Accept-Encoding": "gzip",
+    "Content-Type": "application/x-www-form-urlencoded",
+    "Expect": "100-continue",
+    "X-Unity-Version": "2018.4.11f1",
+    "X-GA": "v1 1",
+    "ReleaseVersion": "OB55",
+}
+
+
+def load_tokens():
+    with open(TOKEN_FILE, "r") as f:
+        return json.load(f)
 
 
 def encrypt_message(plaintext):
+    key = b"Yg&tc%DEuh6%Zc^8"
+    iv = b"6oyZDr22E3ychjM%"
+    cipher = AES.new(key, AES.MODE_CBC, iv)
+    return binascii.hexlify(cipher.encrypt(pad(plaintext, AES.block_size))).decode()
+
+
+def like_proto(uid, region):
+    m = like_pb2.like()
+    m.uid = int(uid)
+    m.region = region
+    return m.SerializeToString()
+
+
+def uid_proto(uid):
+    m = uid_generator_pb2.uid_generator()
+    m.saturn_ = int(uid)
+    m.garena = 1
+    return m.SerializeToString()
+
+
+async def _like_one(session, url, edata, token):
+    h = dict(BASE_HEADERS)
+    h["Authorization"] = f"Bearer {token}"
     try:
-        key = b'Yg&tc%DEuh6%Zc^8'
-        iv = b'6oyZDr22E3ychjM%'
-        cipher = AES.new(key, AES.MODE_CBC, iv)
-        padded_message = pad(plaintext, AES.block_size)
-        encrypted_message = cipher.encrypt(padded_message)
-        return binascii.hexlify(encrypted_message).decode('utf-8')
-    except Exception as e:
-        app.logger.error(f"Error encrypting message: {e}")
+        async with session.post(url, data=edata, headers=h) as r:
+            return await r.text()
+    except Exception:
         return None
 
 
-def create_protobuf_message(user_id, region):
-    try:
-        message = like_pb2.like()
-        message.uid = int(user_id)
-        message.region = region
-        return message.SerializeToString()
-    except Exception as e:
-        app.logger.error(f"Error creating protobuf message: {e}")
-        return None
+async def fire_all_likes(uid, region, url, tokens):
+    edata = bytes.fromhex(encrypt_message(like_proto(uid, region)))
+    conn = aiohttp.TCPConnector(limit=120)
+    async with aiohttp.ClientSession(connector=conn) as s:
+        tasks = [_like_one(s, url, edata, t["token"]) for t in tokens]
+        return await asyncio.gather(*tasks, return_exceptions=True)
 
 
-async def send_request(encrypted_uid, token, url):
-    try:
-        edata = bytes.fromhex(encrypted_uid)
-        headers = {
-            "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 9; ASUS_Z01QD Build/PI)",
-            "Connection": "Keep-Alive",
-            "Accept-Encoding": "gzip",
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Expect": "100-continue",
-            "X-Unity-Version": "2018.4.11f1",
-            "X-GA": "v1 1",
-            "ReleaseVersion": "OB55"
-        }
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, data=edata, headers=headers) as response:
-                return await response.text()
-    except Exception as e:
-        app.logger.error(f"Exception in send_request: {e}")
-        return None
+def get_profile(uid, region, token):
+    url = f"{REGION_SERVERS[region]}/GetPlayerPersonalShow"
+    edata = bytes.fromhex(encrypt_message(uid_proto(uid)))
+    h = dict(BASE_HEADERS)
+    h["Authorization"] = f"Bearer {token}"
+    r = requests.post(url, data=edata, headers=h, verify=False, timeout=25)
+    d = visit_count_pb2.Info()
+    d.ParseFromString(r.content)
+    return d
 
 
-async def send_multiple_requests(uid, region, url):
-    try:
-        protobuf_message = create_protobuf_message(uid, region)
-        if protobuf_message is None:
-            return None
-        encrypted_uid = encrypt_message(protobuf_message)
-        if encrypted_uid is None:
-            return None
-        tokens = load_tokens(region)
-        if tokens is None:
-            return None
-        tasks = []
-        for i in range(100):
-            token = tokens[i % len(tokens)]["token"]
-            tasks.append(send_request(encrypted_uid, token, url))
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        return results
-    except Exception as e:
-        app.logger.error(f"Exception in send_multiple_requests: {e}")
-        return None
+@app.route("/")
+def home():
+    return {"status": "ok", "api": "FF Like API OB55", "regions": list(REGION_SERVERS.keys())}
 
 
-def create_protobuf(uid):
-    try:
-        message = uid_generator_pb2.uid_generator()
-        message.saturn_ = int(uid)
-        message.garena = 1
-        return message.SerializeToString()
-    except Exception as e:
-        app.logger.error(f"Error creating uid protobuf: {e}")
-        return None
-
-
-def enc(uid):
-    protobuf_data = create_protobuf(uid)
-    if protobuf_data is None:
-        return None
-    return encrypt_message(protobuf_data)
-
-
-def make_request(encrypt, region, token):
-    try:
-        if region == "IND":
-            url = "https://client.ind.freefiremobile.com/GetPlayerPersonalShow"
-        elif region in {"BR", "US", "SAC", "NA"}:
-            url = "https://client.us.freefiremobile.com/GetPlayerPersonalShow"
-        else:
-            url = "https://clientbp.ppmainecoonghj.com/GetPlayerPersonalShow"
-        edata = bytes.fromhex(encrypt)
-        headers = {
-            "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 9; ASUS_Z01QD Build/PI)",
-            "Connection": "Keep-Alive",
-            "Accept-Encoding": "gzip",
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Expect": "100-continue",
-            "X-Unity-Version": "2018.4.11f1",
-            "X-GA": "v1 1",
-            "ReleaseVersion": "OB55"
-        }
-        response = requests.post(url, data=edata, headers=headers, verify=False)
-        binary = response.content
-        decoded = visit_count_pb2.Info()
-        decoded.ParseFromString(binary)
-        return decoded
-    except DecodeError as e:
-        app.logger.error(f"DecodeError: {e}")
-        return None
-    except Exception as e:
-        app.logger.error(f"Error in make_request: {e}")
-        return None
-
-
-@app.route('/like', methods=['GET'])
-def handle_requests():
-    global used_count  # ✅ fix added
-
-    # ✅ API key check
-    api_key = request.args.get("key")
-    if api_key not in VALID_API_KEYS:
-        result = OrderedDict([
-            ("error", "Invalid or missing API key"),
-            ("status", 3)
-        ])
-        return app.response_class(
-            response=json.dumps(result, separators=(',', ':')),
-            status=401,
-            mimetype='application/json'
-        )
-
+@app.route("/like")
+def like():
+    global used_count
     uid = request.args.get("uid")
-    region = request.args.get("region", "").upper()
+    region = (request.args.get("region") or "").upper()
+
     if not uid or not region:
-        return {"error": "UID and region are required"}, 400
+        return {"error": "uid و region مطلوبين"}, 400
+    if region not in REGION_SERVERS:
+        return {"error": f"region غير مدعوم: {region}"}, 400
 
     try:
-        def process_request():
-            global used_count  # ✅ fix added again (for nested function)
+        tokens = load_tokens()
+        base = REGION_SERVERS[region]
 
-            tokens = load_tokens(region)
-            if not tokens:
-                raise Exception("Failed to load tokens.")
-            token = tokens[0]['token']
-            encrypted_uid = enc(uid)
-            if encrypted_uid is None:
-                raise Exception("Encryption of UID failed.")
-            before = make_request(encrypted_uid, region, token)
-            if before is None:
-                raise Exception("Failed to get initial info.")
-            before_like = before.AccountInfo.Likes
+        before = get_profile(uid, region, tokens[0]["token"])
+        before_like = before.AccountInfo.Likes
 
-            if region == "IND":
-                url = "https://client.ind.freefiremobile.com/LikeProfile"
-            elif region in {"BR", "US", "SAC", "NA"}:
-                url = "https://client.us.freefiremobile.com/LikeProfile"
-            else:
-                url = "https://clientbp.ppmainecoonghj.com/LikeProfile"
+        asyncio.run(fire_all_likes(uid, region, f"{base}/LikeProfile", tokens))
 
-            asyncio.run(send_multiple_requests(uid, region, url))
+        after = get_profile(uid, region, tokens[0]["token"])
+        after_like = after.AccountInfo.Likes
+        given = after_like - before_like
+        status = 1 if given > 0 else 2
+        if status == 1:
+            used_count += 1
 
-            after = make_request(encrypted_uid, region, token)
-            if after is None:
-                raise Exception("Failed to get final info.")
-            after_like = after.AccountInfo.Likes
-            like_given = after_like - before_like
-            status = 1 if like_given > 0 else 2
-
-            # ✅ Count only when successful (status == 1)
-            if status == 1:
-                used_count += 1
-
-            remaining = max(daily_limit - used_count, 0)
-
-            result = OrderedDict([
-                ("LikesGivenByAPI", like_given),
-                ("LikesafterCommand", after_like),
-                ("LikesbeforeCommand", before_like),
-                ("PlayerNickname", after.AccountInfo.PlayerNickname),
-                ("Level", after.AccountInfo.Levels),
-                ("Region", after.AccountInfo.PlayerRegion),
-                ("UID", after.AccountInfo.UID),
-                ("status", status),
-                ("daily_limit", daily_limit),
-                ("used", used_count),
-                ("remaining", remaining)
-            ])
-
-            return app.response_class(
-                response=json.dumps(result, separators=(',', ':')),
-                status=200,
-                mimetype='application/json'
-            )
-
-        return process_request()
-
+        return OrderedDict([
+            ("LikesGivenByAPI", given),
+            ("LikesafterCommand", after_like),
+            ("LikesbeforeCommand", before_like),
+            ("PlayerNickname", after.AccountInfo.PlayerNickname),
+            ("Level", after.AccountInfo.Levels),
+            ("Region", after.AccountInfo.PlayerRegion),
+            ("UID", after.AccountInfo.UID),
+            ("status", status),
+            ("daily_limit", DAILY_LIMIT),
+            ("used", used_count),
+            ("remaining", max(DAILY_LIMIT - used_count, 0)),
+        ])
     except Exception as e:
-        app.logger.error(f"Error: {e}")
         return {"error": str(e)}, 500
 
 
-# 🆕 /remain endpoint
-@app.route('/remain', methods=['GET'])
-def remain_info():
-    global used_count  # ✅ fix added
-
-    remaining = max(daily_limit - used_count, 0)
-    data = {
-        "daily_limit": daily_limit,
-        "remaining": remaining,
-        "used": used_count,
-        "reset_info": "4:00 AM IST"
-    }
-    return jsonify(data)
+@app.route("/remain")
+def remain():
+    return {"daily_limit": DAILY_LIMIT,
+            "used": used_count,
+            "remaining": max(DAILY_LIMIT - used_count, 0)}
 
 
 if __name__ == "__main__":
